@@ -74,20 +74,22 @@ Agen handles the rest:
 
 ## Quick Start (Docker)
 
-Clone and start:
+Clone and set up your compose file:
 
 ```bash
 git clone https://github.com/your-username/agen.git
 cd agen
+cp docker-compose.sample.yml docker-compose.yml
+# Edit docker-compose.yml to set your image or build target
 docker compose up -d
-docker exec agen-web-1 python manage.py migrate
-docker exec agen-web-1 python manage.py createsuperuser
+docker compose exec web python manage.py migrate
+docker compose exec web python manage.py createsuperuser
 ```
 
 Trigger the demo workflow:
 
 ```bash
-docker exec agen-web-1 python manage.py start_onboarding --user-id alice
+docker compose exec web python manage.py start_onboarding --user-id alice
 ```
 
 Watch it run at `http://localhost:8001/` or in the Django admin at `http://localhost:8001/admin/`.
@@ -100,7 +102,7 @@ The demo workflow:
 Fire the timer manually in dev:
 
 ```bash
-docker exec agen-web-1 python manage.py agen_tick
+docker compose exec web python manage.py agen_tick
 ```
 
 Resolve the human task in the Django admin under **Agen > Human tasks**, or via the shell:
@@ -113,7 +115,7 @@ resolve_human_task(task_id=1, approved=True, resolved_by="admin")
 Test the retry path:
 
 ```bash
-docker exec agen-web-1 python manage.py start_onboarding --user-id bob --simulate-retry
+docker compose exec web python manage.py start_onboarding --user-id bob --simulate-retry
 ```
 
 ---
@@ -383,6 +385,18 @@ def test_with_mock_api(db):
 **Stalled recovery resets retry count:** If a worker crashes after claiming a `RetryInstruction` but before executing the step, that attempt is lost. The stalled-recovery monitor will eventually re-enqueue the step from attempt 1, potentially exceeding `max_attempts` across recovery cycles. Design steps to be idempotent.
 
 **No parallel steps:** Workflows execute sequentially. User-managed parallelism via Celery groups is outside scope.
+
+---
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions, code style, and how to submit a PR.
+
+---
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ---
 

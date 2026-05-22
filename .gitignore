@@ -60,3 +60,6 @@ Thumbs.db
 # Celery
 celerybeat-schedule
 celerybeat.pid
+
+# Local Docker Compose override (copy docker-compose.sample.yml → docker-compose.yml)
+docker-compose.yml
