@@ -77,8 +77,8 @@ Agen handles the rest:
 Clone and start:
 
 ```bash
-git clone <repo>
-cd AGEN
+git clone https://github.com/your-username/agen.git
+cd agen
 docker compose up -d
 docker exec agen-web-1 python manage.py migrate
 docker exec agen-web-1 python manage.py createsuperuser

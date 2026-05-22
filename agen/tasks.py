@@ -126,8 +126,10 @@ def execute_workflow_step(self, instance_id, step_name, retry_attempt=None, **ex
 
             # Guard: terminal states — nothing to do.
             if instance.status in WorkflowInstance.TERMINAL_STATUSES:
-                logger.debug(
-                    "Workflow %s is in terminal state %r — skipping step %r.",
+                logger.info(
+                    "Workflow %s is already in terminal state %r — "
+                    "discarding duplicate task for step %r. "
+                    "This is safe; it usually means a task was re-delivered after the workflow completed.",
                     instance_id,
                     instance.status,
                     step_name,
@@ -139,12 +141,15 @@ def execute_workflow_step(self, instance_id, step_name, retry_attempt=None, **ex
                 WorkflowInstance.STATUS_RUNNING,
                 WorkflowInstance.STATUS_PENDING,
             ):
-                logger.debug(
-                    "Workflow %s: current_step=%r status=%r, task step=%r — skipping.",
+                logger.warning(
+                    "Workflow %s: refusing to run step %r — "
+                    "current_step=%r, status=%r. "
+                    "Possible causes: duplicate delivery, stale task after recovery, "
+                    "or the workflow was manually advanced. Task discarded.",
                     instance_id,
+                    step_name,
                     instance.current_step,
                     instance.status,
-                    step_name,
                 )
                 return
 
