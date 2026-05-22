@@ -36,28 +36,36 @@ class Command(BaseCommand):
             .values_list("pk", flat=True)
         )
 
-        # Create outbox messages in one transaction for efficiency.
-        with transaction.atomic(using=db_alias):
-            for pk in ready_pks:
-                try:
-                    ri = RetryInstruction.objects.select_for_update(
-                        skip_locked=True
-                    ).get(pk=pk, processed=False)
-                except RetryInstruction.DoesNotExist:
-                    continue  # already claimed
+        # Process each retry in its own transaction so a failure on one
+        # doesn't block others, and so _notify_outbox fires per-commit.
+        for pk in ready_pks:
+            try:
+                with transaction.atomic(using=db_alias):
+                    try:
+                        ri = RetryInstruction.objects.select_for_update(
+                            skip_locked=True
+                        ).get(pk=pk, processed=False)
+                    except RetryInstruction.DoesNotExist:
+                        continue  # already claimed
 
-                OutboxMessage.objects.using(db_alias).create(
-                    instance=ri.instance,
-                    step_name=ri.step_name,
-                    extra={"retry_attempt": ri.attempt},
-                )
-                count += 1
-                logger.info(
-                    "Enqueued retry for workflow %s step %r attempt %d",
-                    ri.instance_id,
-                    ri.step_name,
-                    ri.attempt,
-                )
+                    OutboxMessage.objects.using(db_alias).create(
+                        instance=ri.instance,
+                        step_name=ri.step_name,
+                        extra={"retry_attempt": ri.attempt},
+                    )
+                    count += 1
+                    logger.info(
+                        "Enqueued retry for workflow %s step %r attempt %d",
+                        ri.instance_id,
+                        ri.step_name,
+                        ri.attempt,
+                    )
+
+                    from agen.engine import _notify_outbox
+                    _notify_outbox()
+
+            except Exception:
+                logger.warning("Error enqueuing retry pk=%s", pk, exc_info=True)
 
         msg = f"agen_process_retries: enqueued {count} retry task(s)."
         self.stdout.write(msg)
