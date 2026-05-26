@@ -7,7 +7,7 @@
 **Requirements:** Python 3.10+, PostgreSQL 14+, Redis 7+
 
 ```bash
-git clone https://github.com/your-username/agen.git
+git clone https://github.com/alimoradi296/AGEN.git
 cd agen
 python -m venv .venv
 source .venv/bin/activate

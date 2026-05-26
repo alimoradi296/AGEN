@@ -77,7 +77,7 @@ Agen handles the rest:
 Clone and set up your compose file:
 
 ```bash
-git clone https://github.com/your-username/agen.git
+git clone https://github.com/alimoradi296/AGEN.git
 cd agen
 cp docker-compose.sample.yml docker-compose.yml
 # Edit docker-compose.yml to set your image or build target

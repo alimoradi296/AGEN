@@ -8,7 +8,7 @@ This file tells Claude Code (and other AI assistants) everything needed to work 
 
 **Agen** is a Python library that turns Django + Celery + PostgreSQL into a durable, observable workflow engine. It is a library, not a platform — no YAML DSL, no admin dashboard, no external service dependencies.
 
-**Core constraint:** Designed for offline-first deployment (Iran — no SaaS, no LLM APIs). Target: single Docker Compose host with Django, Celery, Redis, PostgreSQL.
+**Core constraint:** Designed for offline-first deployment. Target: single Docker Compose host with Django, Celery, Redis, PostgreSQL.
 
 ---
 
