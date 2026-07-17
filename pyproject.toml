@@ -24,6 +24,9 @@ dev = [
     "black",
     "ruff",
 ]
+metrics = [
+    "prometheus-client>=0.20",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

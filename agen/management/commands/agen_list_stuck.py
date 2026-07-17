@@ -5,7 +5,11 @@ Usage::
 
     python manage.py agen_list_stuck
     python manage.py agen_list_stuck --minutes 10
+    python manage.py agen_list_stuck --workflow OrderFulfillment
+    python manage.py agen_list_stuck --format json
 """
+import json
+
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
@@ -20,6 +24,19 @@ class Command(BaseCommand):
             default=5,
             help="Flag instances idle for more than this many minutes (default: 5).",
         )
+        parser.add_argument(
+            "--workflow",
+            type=str,
+            default="",
+            help="Filter by workflow name (exact match).",
+        )
+        parser.add_argument(
+            "--format",
+            dest="output_format",
+            choices=["text", "json"],
+            default="text",
+            help="Output format: text (default) or json.",
+        )
 
     def handle(self, *args, **options):
         from datetime import timedelta
@@ -31,25 +48,29 @@ class Command(BaseCommand):
         db_alias = getattr(settings, "AGEN_DB_ALIAS", "default")
         threshold = timezone.now() - timedelta(minutes=options["minutes"])
 
-        stuck = (
+        qs = (
             WorkflowInstance.objects.using(db_alias)
             .filter(updated_at__lt=threshold)
             .exclude(status__in=list(WorkflowInstance.TERMINAL_STATUSES))
             .order_by("updated_at")
         )
 
-        if not stuck.exists():
-            self.stdout.write("No stuck workflows found.")
+        if options["workflow"]:
+            qs = qs.filter(workflow_name=options["workflow"])
+
+        if not qs.exists():
+            if options["output_format"] == "json":
+                self.stdout.write("[]")
+            else:
+                self.stdout.write("No stuck workflows found.")
             return
 
         now = timezone.now()
-        count = stuck.count()
-        self.stdout.write(f"Found {count} stuck workflow(s) (idle > {options['minutes']} min):\n")
+        rows = []
 
-        for inst in stuck:
+        for inst in qs:
             idle_min = (now - inst.updated_at).total_seconds() / 60
 
-            # Last error from the most recent failed StepExecution.
             last_se = (
                 StepExecution.objects.using(db_alias)
                 .filter(instance=inst, status="failed")
@@ -58,10 +79,16 @@ class Command(BaseCommand):
             )
             last_error = ""
             if last_se and last_se.error:
-                # First line of the traceback is most useful at a glance.
                 last_error = last_se.error.strip().splitlines()[-1][:120]
 
-            # Pending retry info.
+            pending_retries = (
+                RetryInstruction.objects.using(db_alias)
+                .filter(instance=inst, processed=False)
+                .count()
+            )
+            pending_human = inst.human_tasks.filter(status="pending").count()
+            pending_outbox = inst.outbox_messages.filter(dispatched=False).count()
+
             pending_retry = (
                 RetryInstruction.objects.using(db_alias)
                 .filter(instance=inst, processed=False)
@@ -69,16 +96,51 @@ class Command(BaseCommand):
                 .first()
             )
 
-            self.stdout.write(f"  ID          : {inst.id}")
-            self.stdout.write(f"  Workflow    : {inst.workflow_name}")
-            self.stdout.write(f"  Status      : {inst.status}")
-            self.stdout.write(f"  Step        : {inst.current_step or '(none)'}")
-            self.stdout.write(f"  Idle        : {idle_min:.1f} min  (since {inst.updated_at.strftime('%Y-%m-%d %H:%M:%S UTC')})")
-            if last_error:
-                self.stdout.write(f"  Last error  : {last_error}")
-            if pending_retry:
+            rows.append({
+                "id": str(inst.id),
+                "workflow_name": inst.workflow_name,
+                "status": inst.status,
+                "current_step": inst.current_step or "",
+                "idle_minutes": round(idle_min, 1),
+                "updated_at": inst.updated_at.strftime("%Y-%m-%d %H:%M:%S UTC"),
+                "last_error": last_error,
+                "pending_retries": pending_retries,
+                "pending_human_tasks": pending_human,
+                "pending_outbox": pending_outbox,
+                "next_retry": (
+                    {
+                        "attempt": pending_retry.attempt,
+                        "max_attempts": pending_retry.max_attempts,
+                        "retry_at": pending_retry.retry_at.strftime("%Y-%m-%d %H:%M:%S UTC"),
+                    }
+                    if pending_retry else None
+                ),
+            })
+
+        if options["output_format"] == "json":
+            self.stdout.write(json.dumps(rows, indent=2))
+            return
+
+        self.stdout.write(
+            f"Found {len(rows)} stuck workflow(s) (idle > {options['minutes']} min):\n"
+        )
+        for r in rows:
+            self.stdout.write(f"  ID              : {r['id']}")
+            self.stdout.write(f"  Workflow        : {r['workflow_name']}")
+            self.stdout.write(f"  Status          : {r['status']}")
+            self.stdout.write(f"  Step            : {r['current_step'] or '(none)'}")
+            self.stdout.write(
+                f"  Idle            : {r['idle_minutes']:.1f} min  (since {r['updated_at']})"
+            )
+            if r["last_error"]:
+                self.stdout.write(f"  Last error      : {r['last_error']}")
+            self.stdout.write(f"  Pending retries : {r['pending_retries']}")
+            self.stdout.write(f"  Pending human   : {r['pending_human_tasks']}")
+            self.stdout.write(f"  Pending outbox  : {r['pending_outbox']}")
+            if r["next_retry"]:
+                nr = r["next_retry"]
                 self.stdout.write(
-                    f"  Retry       : attempt {pending_retry.attempt}/{pending_retry.max_attempts}"
-                    f" scheduled at {pending_retry.retry_at.strftime('%Y-%m-%d %H:%M:%S UTC')}"
+                    f"  Next retry      : attempt {nr['attempt']}/{nr['max_attempts']}"
+                    f" at {nr['retry_at']}"
                 )
             self.stdout.write("")

@@ -24,6 +24,7 @@ from agen.engine import (
     _handle_retry_signal,
     _is_infrastructure_exception,
 )
+from agen.log import clear_workflow_context, set_workflow_context
 from agen.models import (
     RetryInstruction,
     StepExecution,
@@ -69,6 +70,14 @@ def execute_workflow_step(self, instance_id, step_name, retry_attempt=None, **ex
     """
     from agen import signals as agen_signals
 
+    set_workflow_context(str(instance_id), step_name)
+    try:
+        return _execute_workflow_step_inner(self, instance_id, step_name, retry_attempt, agen_signals)
+    finally:
+        clear_workflow_context()
+
+
+def _execute_workflow_step_inner(self, instance_id, step_name, retry_attempt, agen_signals):
     # -------------------------------------------------------------------
     # Phase 0: If this is a retry attempt, atomically claim the
     # RetryInstruction in its own short-lived transaction so that even if

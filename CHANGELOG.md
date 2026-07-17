@@ -4,6 +4,44 @@ All notable changes to Agen are documented here.
 
 ---
 
+## [Unreleased] — Phase 1 Stabilisation + Phase 2 Observability — 2026-07-17
+
+### Phase 1 — Stabilisation
+
+#### Hardened Dispatcher (`agen/pg_listener.py`)
+- New dedicated `psycopg2` connection for LISTEN/NOTIFY, completely separate from Django's ORM pool — Django can no longer silently swap the underlying connection
+- `build_dsn()` constructs the DSN from Django's `DATABASES` entry; `make_listen_connection()` opens an autocommit LISTEN connection; `wait_for_notify()` does socket-level `select()` with a configurable timeout
+- `agen_dispatcher` updated to use `pg_listener` — reconnects cleanly on `psycopg2.OperationalError` without leaking the old connection
+
+#### Integration Test Scaffold
+- `tests/integration/conftest.py` added with session-scoped Celery config fixture
+- `tests/settings.py` updated to read all DB connection params from env vars (`POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_HOST`, `POSTGRES_PORT`) — tests now work both locally and inside Docker without changes
+
+### Phase 2 — Observability
+
+#### Structured Logging (`agen/log.py`)
+- New `AgenContextFilter` logging filter — injects `workflow_id` and `step_name` into every log record
+- `install_log_record_factory()` patches the global `LogRecord` factory so all loggers (including those created after app startup) carry context attributes automatically — no per-logger configuration needed
+- `AgenConfig.ready()` calls `install_log_record_factory()` on startup
+- `execute_workflow_step` calls `set_workflow_context()` at the start and `clear_workflow_context()` in a `finally` block, so every log line inside a task execution carries the workflow ID and step name
+- Recommended log format: `%(asctime)s %(name)s [%(workflow_id)s %(step_name)s] %(levelname)s %(message)s`
+
+#### Enhanced `agen_list_stuck`
+- `--format json` flag — machine-readable output for piping to monitoring scripts or alerting pipelines
+- `--workflow <name>` flag — filter output to a single workflow type
+- Each entry now includes: pending retry count, pending human task count, pending outbox message count, and next retry schedule
+
+#### Prometheus Metrics (optional, `pip install agen[metrics]`)
+- New `agen/metrics.py` — `metrics_view` Django view that serves Prometheus text-format metrics; returns a 503 with an install hint if `prometheus_client` is not installed
+- New `agen_collect_metrics` management command — refreshes gauge values; run every 30s via Celery Beat or cron
+- Metrics exposed: `agen_outbox_pending`, `agen_retry_instructions_pending`, `agen_human_tasks_pending`
+- `pyproject.toml` gains a `metrics` optional extra: `pip install agen[metrics]`
+
+### Tests
+- All 27 tests pass (10 functional + 17 integration)
+
+---
+
 ## [0.1.0] — 2026-05-22
 
 Initial release.

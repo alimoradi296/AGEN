@@ -1,14 +1,18 @@
 # Agen — Implementation Status
 
-**Last updated:** 2026-05-22
-**Version:** 0.1.0
+**Last updated:** 2026-07-17
+**Version:** 0.1.0 (Phase 1 + Phase 2 implemented)
 **PRD reference:** `AGEN/AGEN PRD.md` (v2.8 Final)
 
 ---
 
-## Overall Status: v0.1 Core Complete
+## Overall Status: v0.1 Core Complete + Phase 1 Stabilisation + Phase 2 Observability
 
 All PRD Phase 1 (Core Engine), Phase 2 (Retries & Timers), and Phase 3 (Human Tasks & Signals) work is implemented and verified end-to-end in Docker.
+
+**Roadmap Phase 1 (Stabilisation):** Complete — hardened dispatcher, improved error messages, enhanced `agen_list_stuck`, integration test scaffold.
+
+**Roadmap Phase 2 (Observability):** Complete — structured logging with `workflow_id`/`step_name` context, `agen_list_stuck --format json` and `--workflow` filter, optional Prometheus metrics endpoint.
 
 ---
 
@@ -74,8 +78,9 @@ Migration: `agen/migrations/0001_initial.py` — applied and verified.
 | `agen_recover_stalled` | `management/commands/agen_recover_stalled.py` | Done | Every 1 min |
 | `agen_cleanup` | `management/commands/agen_cleanup.py` | Done | Daily |
 | `agen_list_stuck` | `management/commands/agen_list_stuck.py` | Done | On-demand |
+| `agen_collect_metrics` | `management/commands/agen_collect_metrics.py` | Done (optional) | Every 30s (requires `agen[metrics]`) |
 
-**Known dispatcher implementation note (Roadmap Phase 1):** The dispatcher currently does a combined LISTEN + poll-on-timeout loop. A known improvement (from the roadmap) is to use a dedicated `psycopg2` `conn.poll()` with socket-level select for tighter latency. The current implementation is correct and production-safe; the sweeper provides the safety net.
+**Dispatcher (Phase 1 hardened):** Uses a dedicated `agen/pg_listener.py` psycopg2 connection for LISTEN/NOTIFY, completely separate from Django's ORM pool. Reconnects automatically on `psycopg2.OperationalError`.
 
 ---
 
@@ -110,7 +115,8 @@ Migration: `agen/migrations/0001_initial.py` — applied and verified.
 |---|---|---|
 | `run_workflow_sync` helper | Done | `agen/testing.py` — no Celery, no outbox |
 | Functional test suite | Done | `tests/functional/test_workflow_sync.py` — 10/10 passing |
-| Integration tests | Not yet | Planned: Phase 4 of roadmap. Requires `pytest-celery` + in-memory broker setup |
+| Integration test scaffold | Done | `tests/integration/conftest.py` — Celery fixture scaffold |
+| Integration test suite | Done | `tests/integration/test_engine.py` — full engine coverage (no broker needed) |
 
 **Functional test coverage:**
 - Sequential flow
@@ -122,6 +128,21 @@ Migration: `agen/migrations/0001_initial.py` — applied and verified.
 - Initial state passed through
 - Mock step substitution
 - Compile-time validation (`WorkflowDefinitionError` on bad retry key)
+
+**Integration test coverage (`test_engine.py`):**
+- Step advances workflow and creates outbox message
+- `StepExecution` record created on success
+- Full linear flow completes
+- Terminal state guard (no-op on completed workflow)
+- Step mismatch guard
+- `WaitTimer` suspension + `agen_tick` fires expired timer
+- `agen_tick` ignores future timers
+- `WaitHuman` suspension + approve/reject resolution
+- Double-resolve raises `ValueError`
+- Business retry creates `RetryInstruction` + outbox
+- `agen_process_retries` enqueues ready retries
+- Retry exhaustion fails workflow
+- `agen_recover_stalled` re-enqueues stalled workflows
 
 ---
 
@@ -162,16 +183,35 @@ Migration: `agen/migrations/0001_initial.py` — applied and verified.
 
 ---
 
+## Observability (Phase 2)
+
+| Feature | File | Status | Notes |
+|---|---|---|---|
+| Structured logging context (`workflow_id`, `step_name`) | `agen/log.py` | Done | `AgenContextFilter` injected via `apps.py ready()` |
+| Task context set/clear | `agen/tasks.py` | Done | `set_workflow_context` / `clear_workflow_context` wrap each task execution |
+| `agen_list_stuck --format json` | `agen_list_stuck.py` | Done | Machine-readable output for monitoring scripts |
+| `agen_list_stuck --workflow <name>` | `agen_list_stuck.py` | Done | Filter by workflow name |
+| `agen_list_stuck` enhanced detail | `agen_list_stuck.py` | Done | Shows pending retries, human tasks, outbox count |
+| Prometheus metrics view | `agen/metrics.py` | Done (optional) | Requires `pip install agen[metrics]` |
+| `agen_collect_metrics` command | `agen/management/commands/agen_collect_metrics.py` | Done (optional) | Refreshes gauge values; run every 30s |
+
+**Log format to add (in Django LOGGING config):**
+```
+'%(asctime)s %(name)s [%(workflow_id)s %(step_name)s] %(levelname)s %(message)s'
+```
+
+---
+
 ## What Is Not Yet Built (Post-v0.1 Roadmap)
 
 | Feature | Roadmap Phase | Trigger |
 |---|---|---|
-| Integration tests (real Celery + in-memory broker) | Phase 4 | After v0.1 stabilisation |
-| Structured JSON logging with `workflow_id` on every line | Phase 2 | Users report difficulty debugging |
-| Prometheus metrics endpoint | Phase 2 | Users request it |
 | Human task escalation timeout | Phase 3 | Users hit it in production |
-| `WaitHuman` notification hook | Phase 3 | Users need email/Slack without polling |
+| `WaitHuman` creation signal (`human_task_created`) | Phase 3 | Users need email/Slack without polling |
+| `WaitHuman` structured payload + `resolve_human_task(resolution_data=...)` | Phase 3 | Users need form data on approval |
 | Full per-attempt `StepExecution` audit trail (ADR-004 fix) | Phase 4 | After evidence from production |
+| Broker-based integration tests (real Celery + in-memory broker) | Phase 4 | After v0.1 stabilisation |
 | `pause_workflow` / `resume_workflow` / `cancel_workflow` | Phase 5 | Users need it |
+| History archival (`agen_archive`) | Phase 5 | Tables grow too large |
 | Parallel steps / fan-out | Phase 6 | Only with a concrete real-world use case |
 | Optional REST API (`pip install agen[api]`) | Phase 7 | Users need non-Django access |

@@ -117,11 +117,24 @@ docker exec agen-web-1 python manage.py start_onboarding --user-id bob --simulat
 # Manually fire timers (useful in dev/test)
 docker exec agen-web-1 python manage.py agen_tick
 
-# Check stuck workflows
+# Check stuck workflows (text output)
 docker exec agen-web-1 python manage.py agen_list_stuck
 
-# Run functional tests
-docker exec agen-web-1 python -m pytest tests/functional/ -v
+# Check stuck workflows (JSON output, pipe to jq)
+docker exec agen-web-1 python manage.py agen_list_stuck --format json
+
+# Check stuck workflows for a specific workflow type
+docker exec agen-web-1 python manage.py agen_list_stuck --workflow UserOnboarding
+
+# Run all tests (functional + integration)
+docker exec \
+  -e DJANGO_SETTINGS_MODULE=tests.settings \
+  -e POSTGRES_HOST=db \
+  -e POSTGRES_USER=agen \
+  -e POSTGRES_PASSWORD=agen \
+  -e POSTGRES_DB=agen \
+  agen-web-1 \
+  python -m pytest tests/functional/ tests/integration/ -v
 
 # Dashboard
 open http://localhost:8001/

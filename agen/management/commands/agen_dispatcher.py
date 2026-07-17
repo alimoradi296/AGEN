@@ -1,8 +1,9 @@
 """
 agen_dispatcher — long-running outbox dispatcher process.
 
-Connects to PostgreSQL, listens on the ``agen_outbox`` channel, and
-dispatches undispatched OutboxMessage rows as Celery tasks.
+Connects to PostgreSQL via a dedicated psycopg2 connection (separate from
+Django's ORM pool) and listens on the ``agen_outbox`` channel.  Dispatches
+undispatched OutboxMessage rows as Celery tasks whenever notified.
 
 Run as a separate, always-restarted service::
 
@@ -14,7 +15,6 @@ a safety-net fallback.
 from __future__ import annotations
 
 import logging
-import select
 import time
 
 from django.core.management.base import BaseCommand
@@ -22,7 +22,7 @@ from django.core.management.base import BaseCommand
 logger = logging.getLogger(__name__)
 
 HEARTBEAT_INTERVAL = 30  # seconds
-POLL_TIMEOUT = 30        # seconds — block on select() for this long
+POLL_TIMEOUT = 30        # seconds — block waiting for NOTIFY for this long
 RECONNECT_SLEEP = 5      # seconds after a DB error before reconnecting
 
 
@@ -31,9 +31,9 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         from django.conf import settings
-        from django.db import connections
 
         db_alias = getattr(settings, "AGEN_DB_ALIAS", "default")
+        db_settings = settings.DATABASES[db_alias]
 
         self.stdout.write("agen_dispatcher starting …")
         logger.info("agen_dispatcher starting, db_alias=%r", db_alias)
@@ -41,15 +41,14 @@ class Command(BaseCommand):
         last_heartbeat = time.monotonic()
 
         while True:
+            listen_conn = None
             try:
-                conn = connections[db_alias]
-                conn.ensure_connection()
-                raw_conn = conn.connection  # psycopg2 connection
+                from agen.pg_listener import build_dsn, make_listen_connection, wait_for_notify
 
-                # Switch to LISTEN mode. We need to use the raw psycopg2
-                # connection for LISTEN/NOTIFY.
-                raw_conn.set_isolation_level(0)  # autocommit
-                with raw_conn.cursor() as cur:
+                dsn = build_dsn(db_settings)
+                listen_conn = make_listen_connection(dsn)
+
+                with listen_conn.cursor() as cur:
                     cur.execute("LISTEN agen_outbox;")
 
                 logger.info("agen_dispatcher listening on agen_outbox channel")
@@ -61,11 +60,8 @@ class Command(BaseCommand):
                         logger.info("agen_dispatcher heartbeat — alive")
                         last_heartbeat = now
 
-                    # Block waiting for a notification (or timeout).
-                    r, _, _ = select.select([raw_conn], [], [], POLL_TIMEOUT)
-                    raw_conn.poll()
-
-                    # Process all pending notifications (or just sweep on timeout).
+                    # Block until notified or timeout — then drain regardless.
+                    wait_for_notify(listen_conn, timeout=POLL_TIMEOUT)
                     _drain_outbox(db_alias)
 
             except Exception as exc:
@@ -74,10 +70,11 @@ class Command(BaseCommand):
                     exc,
                     RECONNECT_SLEEP,
                 )
-                try:
-                    connections[db_alias].close()
-                except Exception:
-                    pass
+                if listen_conn is not None:
+                    try:
+                        listen_conn.close()
+                    except Exception:
+                        pass
                 time.sleep(RECONNECT_SLEEP)
 
 
