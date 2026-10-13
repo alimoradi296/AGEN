@@ -1,23 +1,35 @@
-# Agen
+# AGEN
 
-A durable workflow engine for Django + Celery + PostgreSQL.
+Persistent workflows for Django, Celery, and PostgreSQL.
 
-Agen turns your existing Django stack into a reliable, observable orchestration layer. No YAML, no saga compiler, no external services. It works entirely offline on a single Docker Compose host.
+AGEN stores workflow state, timers, human approvals, and dispatch intent in PostgreSQL.
+Use it for sequential business processes that continue across worker or broker interruptions.
 
----
+**Status:** Early `0.1.0` implementation with a Docker demo and database tests.
+External side effects require idempotency. Recovery depends on the dispatcher and scheduled maintenance commands.
 
-## The Problem
+[Run the demo](#run-the-demo) · [Define a workflow](#how-it-works) · [Verification and limits](#verification-and-limits)
 
-Multi-step business processes built on bare Celery chains are fragile:
+## The workflow
 
-- A worker crash after a DB write but before enqueueing the next step stalls the process forever.
-- Celery `countdown` delays disappear on broker restart.
-- Transient DB errors kill workflows instead of being retried.
-- There is no record of what happened, in what order, and why things failed.
+```mermaid
+flowchart LR
+    A[Create account] --> B[Send welcome email]
+    B --> C[Wait for stored timer]
+    C --> D[Send reminder]
+    D --> E[Wait for human approval]
+    E --> F[Activate account]
+```
 
-Agen solves all of this.
+The included demo simulates external account and email operations with logs.
+It uses a ten-second timer and a real persisted approval task.
 
----
+## Why the database holds the state
+
+A database write and a broker publish are separate operations.
+A crash between them can leave a process without its next task.
+AGEN writes the next dispatch intent to an outbox in the same transaction as the step result.
+A dispatcher publishes that intent. Stored timers and recovery commands handle additional interruption paths.
 
 ## How It Works
 
@@ -58,7 +70,7 @@ Agen handles the rest:
 - Timers are stored in PostgreSQL — they survive broker restarts.
 - Business retries are stored in PostgreSQL. Each retry attempt is claimed atomically before execution, preventing duplicate runs.
 - A stalled-workflow monitor detects and re-enqueues workflows that go quiet after a configurable grace period.
-- Every step attempt is logged in `StepExecution` for full audit trail.
+- Committed step attempts are logged in `StepExecution`. Retried failures have the audit limitation documented below.
 
 ---
 
@@ -72,55 +84,66 @@ Agen handles the rest:
 
 ---
 
-## Quick Start (Docker)
+## Run the demo
 
-Clone and set up your compose file:
+Requirements: Docker with Compose, and available local ports `5433`, `6380`, and `8001`.
 
 ```bash
 git clone https://github.com/alimoradi296/AGEN.git
-cd agen
-cp docker-compose.sample.yml docker-compose.yml
-# Edit docker-compose.yml to set your image or build target
-docker compose up -d
-docker compose exec web python manage.py migrate
-docker compose exec web python manage.py createsuperuser
+cd AGEN
+docker compose -p agen-demo up -d --build
+docker compose -p agen-demo exec web python manage.py migrate
+docker compose -p agen-demo exec web python manage.py createsuperuser
+docker compose -p agen-demo exec web python manage.py start_onboarding --user-id alice
 ```
 
-Trigger the demo workflow:
+Open [the demo dashboard](http://localhost:8001/).
+The workflow initially waits at a stored timer.
+After ten seconds, run:
 
 ```bash
-docker compose exec web python manage.py start_onboarding --user-id alice
+docker compose -p agen-demo exec web python manage.py agen_tick
 ```
 
-Watch it run at `http://localhost:8001/` or in the Django admin at `http://localhost:8001/admin/`.
-
-The demo workflow:
-1. Creates an account → sends a welcome email → sets a 10-second timer
-2. After the timer fires (`agen_tick` or Celery Beat), sends a reminder
-3. Waits for a human to approve in the Django admin → activates the account
-
-Fire the timer manually in dev:
+Open [Django admin](http://localhost:8001/admin/) with the account you created.
+Open **Agen → Human tasks** and select the pending task.
+Editing the task status alone does not resume the workflow. Resolve it through the shell with its actual ID:
 
 ```bash
-docker compose exec web python manage.py agen_tick
+docker compose -p agen-demo exec web python manage.py shell
 ```
-
-Resolve the human task in the Django admin under **Agen > Human tasks**, or via the shell:
 
 ```python
 from agen.human import resolve_human_task
-resolve_human_task(task_id=1, approved=True, resolved_by="admin")
+resolve_human_task(task_id=1, approved=True, resolved_by="demo")
 ```
 
-Test the retry path:
+Replace `1` with the pending task ID. The workflow then reaches `completed`.
+The dashboard shows each stored instance and its current state.
+
+The Compose file includes a dispatcher and Celery Beat.
+For manual maintenance, use `agen_tick`, `agen_sweep`, `agen_process_retries`, and `agen_recover_stalled`.
+
+Stop the demo services:
 
 ```bash
-docker compose exec web python manage.py start_onboarding --user-id bob --simulate-retry
+docker compose -p agen-demo down
 ```
+
+This command retains the demo database volumes.
+The demo uses development credentials and settings. Configure separate credentials and settings for deployment.
 
 ---
 
 ## Installing in Your Project
+
+Install the library from a source checkout:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+```
 
 Add `agen` to `INSTALLED_APPS`:
 
@@ -378,9 +401,19 @@ def test_with_mock_api(db):
 
 ---
 
-## Known Limitations
+## Verification and limits
 
-**Incomplete audit trail for retried steps:** When a step fails and a business retry is scheduled, the `StepExecution` record for that failed attempt is rolled back with the transaction. Intermediate failure details are in `RetryInstruction.error`. Only the final attempt (success or final failure) produces a committed `StepExecution` row. This is ADR-004; the fix is planned for Roadmap Phase 4.
+The repository contains [functional tests](tests/functional/test_workflow_sync.py) and [database integration tests](tests/integration/test_engine.py).
+They cover step transitions, outbox records, timer processing, human approval, retries, and stalled recovery.
+The integration tests invoke execution directly. They do not prove live worker crash recovery across every interruption point.
+
+Recovery requires PostgreSQL data, available workers, the dispatcher, and scheduled maintenance commands.
+A transaction cannot make an external API call exactly once. Use idempotency keys or another deduplication mechanism for external effects.
+Tune the stalled grace period for your longest step.
+
+### Known limitations
+
+**Incomplete audit trail for retried steps:** A scheduled business retry rolls back the failed attempt and its `StepExecution` record. Intermediate failure details are in `RetryInstruction.error`. Only the final attempt (success or final failure) produces a committed `StepExecution` row. This is ADR-004; the fix is planned for Roadmap Phase 4.
 
 **Stalled recovery resets retry count:** If a worker crashes after claiming a `RetryInstruction` but before executing the step, that attempt is lost. The stalled-recovery monitor will eventually re-enqueue the step from attempt 1, potentially exceeding `max_attempts` across recovery cycles. Design steps to be idempotent.
 
